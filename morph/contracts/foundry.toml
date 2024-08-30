@@ -1,0 +1,21 @@
+[profile.default]
+src = 'contracts'
+out = 'forge-artifacts'
+optimizer = true
+optimizer_runs = 999999
+remappings = []
+extra_output = ['devdoc', 'userdoc', 'metadata', 'storageLayout']
+bytecode_hash = 'none'
+build_info = true
+build_info_path = 'artifacts/build-info'
+ffi = true
+fuzz_runs = 16
+evm_version = 'cancun'
+
+fs_permissions = [{ access = 'read-write', path = './.resource-metering.csv' }]
+
+[profile.ci]
+fuzz_runs = 512
+
+[profile.echidna]
+bytecode_hash = 'ipfs'

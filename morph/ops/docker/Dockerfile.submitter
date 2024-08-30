@@ -1,0 +1,17 @@
+# Build Geth in a stock Go builder container
+FROM morph/go-ubuntu-builder:go-1.22-ubuntu as builder
+
+COPY . /morph
+
+WORKDIR /morph/tx-submitter
+
+RUN make build
+
+# Pull Geth into a second stage deploy alpine container
+FROM morph/go-ubuntu-builder:go-1.22-ubuntu
+
+RUN apt-get -qq update \
+    && apt-get -qq install -y --no-install-recommends ca-certificates
+COPY --from=builder /morph/tx-submitter/tx-submitter /usr/local/bin/
+
+CMD ["tx-submitter"]

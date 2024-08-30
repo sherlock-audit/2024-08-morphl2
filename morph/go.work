@@ -1,0 +1,11 @@
+go 1.22
+
+use (
+	./bindings
+	./contracts
+	./node
+	./ops/l2-genesis
+	./ops/tools
+	./oracle
+	./tx-submitter
+)

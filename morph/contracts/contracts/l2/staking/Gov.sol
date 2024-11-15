@@ -28,14 +28,14 @@ contract Gov is IGov, OwnableUpgradeable {
     /// @notice batch block interval
     uint256 public override batchBlockInterval;
 
-    /// @notice batch max bytes
-    uint256 public override batchMaxBytes;
+    /// @notice deprecated, to delete
+    uint256 private batchMaxBytes;
 
     /// @notice batch timeout
     uint256 public override batchTimeout;
 
-    /// @notice max chunks
-    uint256 public override maxChunks;
+    /// @notice deprecated, to delete
+    uint256 private maxChunks;
 
     /// @notice rollup epoch
     uint256 public override rollupEpoch;
@@ -50,7 +50,7 @@ contract Gov is IGov, OwnableUpgradeable {
     uint256 public override currentProposalID;
 
     /// @notice the start index of undeleted proposals
-    uint256 private undeletedProposalStart;
+    uint256 public undeletedProposalStart;
 
     /// @notice proposal data
     mapping(uint256 proposalID => ProposalData) public proposalData;
@@ -60,6 +60,9 @@ contract Gov is IGov, OwnableUpgradeable {
 
     /// @notice proposal voter info
     mapping(uint256 proposalID => EnumerableSetUpgradeable.AddressSet) internal votes;
+
+    /// @notice latest executed proposal ID
+    uint256 public latestExecutedProposalID;
 
     /**********************
      * Function Modifiers *
@@ -91,40 +94,31 @@ contract Gov is IGov, OwnableUpgradeable {
     /// @param _owner owner
     /// @param _votingDuration proposal interval
     /// @param _batchBlockInterval batch block interval
-    /// @param _batchMaxBytes max batch bytes
     /// @param _batchTimeout batch timeout
-    /// @param _maxChunks max chunks
     /// @param _rollupEpoch rollup epoch
     function initialize(
         address _owner,
         uint256 _votingDuration,
         uint256 _batchBlockInterval,
-        uint256 _batchMaxBytes,
         uint256 _batchTimeout,
-        uint256 _maxChunks,
         uint256 _rollupEpoch
     ) public initializer {
         require(_owner != address(0), "invalid owner address");
         require(_votingDuration > 0, "invalid proposal voting duration");
-        require(_maxChunks > 0, "invalid max chunks");
         require(_rollupEpoch > 0, "invalid rollup epoch");
-        require(_batchBlockInterval != 0 || _batchMaxBytes != 0 || _batchTimeout != 0, "invalid batch params");
+        require(_batchBlockInterval != 0 || _batchTimeout != 0, "invalid batch params");
 
         _transferOwnership(_owner);
 
         votingDuration = _votingDuration;
         batchBlockInterval = _batchBlockInterval;
-        batchMaxBytes = _batchMaxBytes;
         batchTimeout = _batchTimeout;
-        maxChunks = _maxChunks;
         rollupEpoch = _rollupEpoch;
         rollupEpochUpdateTime = block.timestamp;
 
         emit VotingDurationUpdated(0, _votingDuration);
         emit BatchBlockIntervalUpdated(0, _batchBlockInterval);
-        emit BatchMaxBytesUpdated(0, _batchMaxBytes);
         emit BatchTimeoutUpdated(0, _batchTimeout);
-        emit MaxChunksUpdated(0, _maxChunks);
         emit RollupEpochUpdated(0, _rollupEpoch);
     }
 
@@ -135,11 +129,7 @@ contract Gov is IGov, OwnableUpgradeable {
     /// @notice create a proposal
     function createProposal(ProposalData calldata proposal) external onlySequencer returns (uint256) {
         require(proposal.rollupEpoch != 0, "invalid rollup epoch");
-        require(proposal.maxChunks > 0, "invalid max chunks");
-        require(
-            proposal.batchBlockInterval != 0 || proposal.batchMaxBytes != 0 || proposal.batchTimeout != 0,
-            "invalid batch params"
-        );
+        require(proposal.batchBlockInterval != 0 || proposal.batchTimeout != 0, "invalid batch params");
 
         currentProposalID++;
         proposalData[currentProposalID] = proposal;
@@ -149,9 +139,7 @@ contract Gov is IGov, OwnableUpgradeable {
             currentProposalID,
             _msgSender(),
             proposal.batchBlockInterval,
-            proposal.batchMaxBytes,
             proposal.batchTimeout,
-            proposal.maxChunks,
             proposal.rollupEpoch
         );
 
@@ -161,6 +149,7 @@ contract Gov is IGov, OwnableUpgradeable {
     /// @notice vote a proposal
     function vote(uint256 proposalID) external onlySequencer {
         require(proposalID <= currentProposalID, "invalid proposalID");
+        require(proposalID > latestExecutedProposalID, "expired proposalID");
         require(proposalID >= undeletedProposalStart, "proposal pruned");
         uint256 expirationTime = proposalInfos[proposalID].expirationTime;
         require(
@@ -175,6 +164,7 @@ contract Gov is IGov, OwnableUpgradeable {
         }
     }
 
+    /// @notice set voting duration
     function setVotingDuration(uint256 _votingDuration) external onlyOwner {
         require(_votingDuration > 0 && _votingDuration != votingDuration, "invalid new proposal voting duration");
         uint256 _oldVotingDuration = votingDuration;
@@ -195,6 +185,19 @@ contract Gov is IGov, OwnableUpgradeable {
         _executeProposal(proposalID);
     }
 
+    /// @notice execute a passed proposal
+    /// @param deleteTo      last proposal ID to delete
+    function cleanUpExpiredProposals(uint256 deleteTo) external {
+        require(deleteTo < latestExecutedProposalID, "only allow to delete the proposal befor latest passed proposal");
+        // when a proposal is passed, the previous proposals will be invalidated and deleted
+        for (uint256 i = undeletedProposalStart; i <= deleteTo; i++) {
+            delete proposalData[i];
+            delete proposalInfos[i];
+            delete votes[i];
+        }
+        undeletedProposalStart = deleteTo + 1;
+    }
+
     /*************************
      * Public View Functions *
      *************************/
@@ -202,7 +205,13 @@ contract Gov is IGov, OwnableUpgradeable {
     /// @notice return proposal status. {finished, passed, executed}
     function proposalStatus(uint256 proposalID) public view returns (bool, bool, bool) {
         require(proposalID <= currentProposalID, "invalid proposalID");
+        require(proposalID >= latestExecutedProposalID, "expired proposal");
         require(proposalID >= undeletedProposalStart, "proposal pruned");
+
+        if (proposalID == latestExecutedProposalID) {
+            return (true, true, true);
+        }
+
         bool executed = proposalInfos[proposalID].executed;
         uint256 expirationTime = proposalInfos[proposalID].expirationTime;
         return (
@@ -225,25 +234,17 @@ contract Gov is IGov, OwnableUpgradeable {
 
     /// @notice execute a passed proposal
     function _executeProposal(uint256 proposalID) internal {
+        latestExecutedProposalID = proposalID;
+
         if (batchBlockInterval != proposalData[proposalID].batchBlockInterval) {
             uint256 _oldValue = batchBlockInterval;
             batchBlockInterval = proposalData[proposalID].batchBlockInterval;
             emit BatchBlockIntervalUpdated(_oldValue, proposalData[proposalID].batchBlockInterval);
         }
-        if (batchMaxBytes != proposalData[proposalID].batchMaxBytes) {
-            uint256 _oldValue = batchMaxBytes;
-            batchMaxBytes = proposalData[proposalID].batchMaxBytes;
-            emit BatchMaxBytesUpdated(_oldValue, proposalData[proposalID].batchMaxBytes);
-        }
         if (batchTimeout != proposalData[proposalID].batchTimeout) {
             uint256 _oldValue = batchTimeout;
             batchTimeout = proposalData[proposalID].batchTimeout;
             emit BatchTimeoutUpdated(_oldValue, proposalData[proposalID].batchTimeout);
-        }
-        if (maxChunks != proposalData[proposalID].maxChunks) {
-            uint256 _oldValue = maxChunks;
-            maxChunks = proposalData[proposalID].maxChunks;
-            emit MaxChunksUpdated(_oldValue, proposalData[proposalID].maxChunks);
         }
         if (rollupEpoch != proposalData[proposalID].rollupEpoch) {
             uint256 _oldValue = rollupEpoch;
@@ -253,15 +254,7 @@ contract Gov is IGov, OwnableUpgradeable {
         }
         proposalInfos[proposalID].executed = true;
 
-        // when a proposal is passed, the previous proposals will be invalidated and deleted
-        for (uint256 i = undeletedProposalStart; i < proposalID; i++) {
-            delete proposalData[i];
-            delete proposalInfos[i];
-            delete votes[i];
-        }
-        undeletedProposalStart = proposalID;
-
-        emit ProposalExecuted(proposalID, batchBlockInterval, batchMaxBytes, batchTimeout, maxChunks, rollupEpoch);
+        emit ProposalExecuted(proposalID, batchBlockInterval, batchTimeout, rollupEpoch);
     }
 
     /// @notice check whether the proposal has been passed

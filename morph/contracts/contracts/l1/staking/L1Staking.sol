@@ -18,7 +18,7 @@ contract L1Staking is IL1Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
     /// @notice rollup Contract
     address public rollupContract;
 
-    /// @notice staking value, immutable
+    /// @notice staking value
     uint256 public stakingValue;
 
     /// @notice exit lock blocks
@@ -68,6 +68,9 @@ contract L1Staking is IL1Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
 
     /// @notice challenge deposit value
     uint256 public challengeDeposit;
+
+    /// @notice nonce of staking L1 => L2 msg
+    uint256 public nonce;
 
     /**********************
      * Function Modifiers *
@@ -219,6 +222,9 @@ contract L1Staking is IL1Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
 
         uint256 valueSum;
         for (uint256 i = 0; i < sequencers.length; i++) {
+            if (sequencers[i] == address(0)) {
+                continue;
+            }
             if (withdrawals[sequencers[i]] > 0) {
                 delete withdrawals[sequencers[i]];
                 valueSum += stakingValue;
@@ -252,6 +258,15 @@ contract L1Staking is IL1Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
         _transfer(receiver, slashRemaining);
         slashRemaining = 0;
         emit SlashRemainingClaimed(receiver, _slashRemaining);
+    }
+
+    /// @notice update staking value
+    /// @param _stakingValue    staking value
+    function updateStakingValue(uint256 _stakingValue) external onlyOwner {
+        require(_stakingValue > 0 && _stakingValue != stakingValue, "invalid staking value");
+        uint256 _oldStakingValue = stakingValue;
+        stakingValue = _stakingValue;
+        emit StakingValueUpdated(_oldStakingValue, stakingValue);
     }
 
     /// @notice update gas limit of add staker
@@ -306,7 +321,7 @@ contract L1Staking is IL1Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
     /// @param receiver  receiver address
     function claimWithdrawal(address receiver) external nonReentrant {
         require(withdrawals[_msgSender()] > 0, "withdrawal not exist");
-        require(withdrawals[_msgSender()] < block.number, "withdrawal locked");
+        require(withdrawals[_msgSender()] <= block.number, "withdrawal locked");
 
         delete withdrawals[_msgSender()];
         _cleanStakerStore();
@@ -414,7 +429,7 @@ contract L1Staking is IL1Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
 
         stakerAddrs = new address[](stakersLength);
         uint256 index = 0;
-        for (uint8 i = 1; i < 255; i++) {
+        for (uint8 i = 1; i <= 255; i++) {
             if ((bitmap & (1 << i)) > 0) {
                 stakerAddrs[index] = stakerSet[i - 1];
                 index = index + 1;
@@ -466,9 +481,10 @@ contract L1Staking is IL1Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
         MESSENGER.sendMessage(
             address(OTHER_STAKING),
             0,
-            abi.encodeCall(IL2Staking.addStaker, (add)),
+            abi.encodeCall(IL2Staking.addStaker, (nonce, add)),
             gasLimitAddStaker
         );
+        nonce = nonce + 1;
     }
 
     /// @notice remove stakers
@@ -477,16 +493,22 @@ contract L1Staking is IL1Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
         MESSENGER.sendMessage(
             address(OTHER_STAKING),
             0,
-            abi.encodeCall(IL2Staking.removeStakers, (remove)),
+            abi.encodeCall(IL2Staking.removeStakers, (nonce, remove)),
             gasLimitRemoveStakers
         );
+        nonce = nonce + 1;
     }
 
     /// @notice clean staker store
     function _cleanStakerStore() internal {
         uint256 i = 0;
         while (i < deleteList.length) {
-            if (deleteableHeight[deleteList[i]] <= block.number) {
+            if (deleteList[i] == address(0)) {
+                // clean deleteList
+                delete deleteableHeight[deleteList[i]];
+                deleteList[i] = deleteList[deleteList.length - 1];
+                deleteList.pop();
+            } else if (deleteableHeight[deleteList[i]] <= block.number) {
                 // clean stakerSet
                 delete stakerSet[stakerIndexes[deleteList[i]] - 1];
                 delete stakerIndexes[deleteList[i]];

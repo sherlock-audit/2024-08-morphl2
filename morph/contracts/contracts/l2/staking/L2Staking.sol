@@ -78,6 +78,9 @@ contract L2Staking is IL2Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
     /// @notice delegator's undelegations
     mapping(address delegator => Undelegation[]) public undelegations;
 
+    /// @notice nonce of staking L1 => L2 msg
+    uint256 public nonce;
+
     /**********************
      * Function Modifiers *
      **********************/
@@ -91,6 +94,12 @@ contract L2Staking is IL2Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
     /// @notice only staker allowed
     modifier onlyStaker() {
         require(stakerRankings[_msgSender()] > 0, "only staker allowed");
+        _;
+    }
+
+    /// @notice check nonce
+    modifier checkNonce(uint256 _nonce) {
+        require(_nonce == nonce, "invalid nonce");
         _;
     }
 
@@ -154,8 +163,10 @@ contract L2Staking is IL2Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
      ************************/
 
     /// @notice add staker, sync from L1
-    /// @param add   staker to add. {addr, tmKey, blsKey}
-    function addStaker(Types.StakerInfo calldata add) external onlyOtherStaking {
+    /// @param _nonce   msg nonce
+    /// @param add      staker to add. {addr, tmKey, blsKey}
+    function addStaker(uint256 _nonce, Types.StakerInfo calldata add) external onlyOtherStaking checkNonce(_nonce) {
+        nonce = _nonce + 1;
         if (stakerRankings[add.addr] == 0) {
             stakerAddresses.push(add.addr);
             stakerRankings[add.addr] = stakerAddresses.length;
@@ -169,8 +180,62 @@ contract L2Staking is IL2Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
     }
 
     /// @notice remove stakers, sync from L1. If new sequencer set is nil, layer2 will stop producing blocks
-    /// @param remove    staker to remove
-    function removeStakers(address[] calldata remove) external onlyOtherStaking {
+    /// @param _nonce   msg nonce
+    /// @param remove   staker to remove
+    function removeStakers(uint256 _nonce, address[] calldata remove) external onlyOtherStaking checkNonce(_nonce) {
+        nonce = _nonce + 1;
+        bool updateSequencerSet = false;
+        for (uint256 i = 0; i < remove.length; i++) {
+            if (stakerRankings[remove[i]] <= latestSequencerSetSize) {
+                updateSequencerSet = true;
+            }
+
+            if (stakerRankings[remove[i]] > 0) {
+                // update stakerRankings
+                for (uint256 j = stakerRankings[remove[i]] - 1; j < stakerAddresses.length - 1; j++) {
+                    stakerAddresses[j] = stakerAddresses[j + 1];
+                    stakerRankings[stakerAddresses[j]] -= 1;
+                }
+                stakerAddresses.pop();
+                delete stakerRankings[remove[i]];
+
+                // update candidateNumber
+                if (stakerDelegations[remove[i]] > 0) {
+                    candidateNumber -= 1;
+                }
+            }
+
+            delete stakers[remove[i]];
+        }
+        emit StakerRemoved(remove);
+
+        if (updateSequencerSet) {
+            _updateSequencerSet();
+        }
+    }
+
+    /// @notice add staker. Only can be called when a serious bug causes L1 and L2 data to be out of sync
+    /// @param _nonce   msg nonce
+    /// @param add      staker to add. {addr, tmKey, blsKey}
+    function emergencyAddStaker(uint256 _nonce, Types.StakerInfo calldata add) external onlyOwner checkNonce(_nonce) {
+        nonce = _nonce + 1;
+        if (stakerRankings[add.addr] == 0) {
+            stakerAddresses.push(add.addr);
+            stakerRankings[add.addr] = stakerAddresses.length;
+        }
+        stakers[add.addr] = add;
+        emit StakerAdded(add.addr, add.tmKey, add.blsKey);
+
+        if (!rewardStarted && stakerAddresses.length <= sequencerSetMaxSize) {
+            _updateSequencerSet();
+        }
+    }
+
+    /// @notice remove stakers. Only can be called when a serious bug causes L1 and L2 data to be out of sync
+    /// @param _nonce   msg nonce
+    /// @param remove   staker to remove
+    function emergencyRemoveStakers(uint256 _nonce, address[] calldata remove) external onlyOwner checkNonce(_nonce) {
+        nonce = _nonce + 1;
         bool updateSequencerSet = false;
         for (uint256 i = 0; i < remove.length; i++) {
             if (stakerRankings[remove[i]] <= latestSequencerSetSize) {
@@ -210,10 +275,9 @@ contract L2Staking is IL2Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
         emit CommissionUpdated(_msgSender(), commission, epochEffective);
     }
 
-    /// @notice claimCommission claim commission reward
-    /// @param targetEpochIndex   up to the epoch index that the staker wants to claim
-    function claimCommission(uint256 targetEpochIndex) external onlyStaker nonReentrant {
-        IDistribute(DISTRIBUTE_CONTRACT).claimCommission(_msgSender(), targetEpochIndex);
+    /// @notice claimCommission claim unclaimed commission reward of a staker
+    function claimCommission() external nonReentrant {
+        IDistribute(DISTRIBUTE_CONTRACT).claimCommission(_msgSender());
     }
 
     /// @notice update params
@@ -227,8 +291,12 @@ contract L2Staking is IL2Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
         sequencerSetMaxSize = _sequencerSetMaxSize;
         emit SequencerSetMaxSizeUpdated(_oldSequencerSetMaxSize, _sequencerSetMaxSize);
 
-        if (sequencerSetMaxSize < latestSequencerSetSize) {
-            // update sequencer set
+        uint256 candidate = rewardStarted ? candidateNumber : stakerAddresses.length;
+        uint256 newSequencerSetSize = candidate < sequencerSetMaxSize ? candidate : sequencerSetMaxSize;
+        // latest_sequencer_set_size = Min(candidate, old_sequencer_set_max_size)
+        // new_sequencer_set_size = Min(candidate, new_sequencer_set_max_size)
+        // if new_sequencer_set_size != latest_sequencer_set_size, update sequencer set
+        if (newSequencerSetSize != latestSequencerSetSize) {
             _updateSequencerSet();
         }
     }
@@ -236,7 +304,7 @@ contract L2Staking is IL2Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
     /// @notice advance layer2 stage
     /// @param _rewardStartTime   reward start time
     function updateRewardStartTime(uint256 _rewardStartTime) external onlyOwner {
-        require(!rewardStarted && rewardStartTime > block.timestamp, "reward already started");
+        require(!rewardStarted, "reward already started");
         require(
             _rewardStartTime > block.timestamp &&
                 _rewardStartTime % REWARD_EPOCH == 0 &&
@@ -283,8 +351,11 @@ contract L2Staking is IL2Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
     /// @param amount       stake amount
     function delegateStake(address delegatee, uint256 amount) external isStaker(delegatee) nonReentrant {
         require(amount > 0, "invalid stake amount");
-        // Re-staking to the same delegatee is not allowed before claiming undelegation
-        require(!_unclaimed(_msgSender(), delegatee), "undelegation unclaimed");
+        // Re-staking to the same delegatee is not allowed before claiming undelegation & reward
+        require(!_unclaimedUndelegation(_msgSender(), delegatee), "undelegation unclaimed");
+        if (!_isStakingTo(delegatee)) {
+            require(!_unclaimedReward(_msgSender(), delegatee), "reward unclaimed");
+        }
 
         stakerDelegations[delegatee] += amount;
         delegations[delegatee][_msgSender()] += amount;
@@ -325,7 +396,6 @@ contract L2Staking is IL2Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
             effectiveEpoch,
             delegations[delegatee][_msgSender()],
             stakerDelegations[delegatee],
-            delegators[delegatee].length(),
             delegations[delegatee][_msgSender()] == amount
         );
 
@@ -342,8 +412,6 @@ contract L2Staking is IL2Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
     /// @notice delegator unstake morph
     /// @param delegatee delegatee address
     function undelegateStake(address delegatee) external nonReentrant {
-        // must claim any undelegation first
-        require(!_unclaimed(_msgSender(), delegatee), "undelegation unclaimed");
         require(_isStakingTo(delegatee), "staking amount is zero");
 
         // staker has been removed, unlock next epoch
@@ -386,8 +454,7 @@ contract L2Staking is IL2Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
             delegatee,
             _msgSender(),
             effectiveEpoch,
-            stakerDelegations[delegatee],
-            delegators[delegatee].length()
+            stakerDelegations[delegatee]
         );
 
         emit Undelegated(delegatee, _msgSender(), undelegation.amount, effectiveEpoch, unlockEpoch);
@@ -460,12 +527,6 @@ contract L2Staking is IL2Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
         return _isStakingTo(staker);
     }
 
-    /// @notice Get all the delegators which staked to staker
-    /// @param staker staker address
-    function getAllDelegators(address staker) external view returns (address[] memory) {
-        return delegators[staker].values();
-    }
-
     /// @notice Get the delegators length which staked to staker
     /// @param staker staker address
     function getDelegatorsLength(address staker) external view returns (uint256) {
@@ -491,8 +552,10 @@ contract L2Staking is IL2Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
         if (end > (delegatorsTotalNumber - 1)) {
             end = delegatorsTotalNumber - 1;
         }
-        for (uint256 i = start; i <= end; i++) {
-            delegatorsInPage[i] = delegators[staker].at(i);
+        uint256 i = start;
+        uint256 j = 0;
+        while (i <= end) {
+            delegatorsInPage[j++] = delegators[staker].at(i++);
         }
         return (delegatorsTotalNumber, delegatorsInPage);
     }
@@ -579,12 +642,17 @@ contract L2Staking is IL2Staking, Staking, OwnableUpgradeable, ReentrancyGuardUp
     }
 
     /// @notice whether there is a undedeletion unclaimed
-    function _unclaimed(address delegator, address delegatee) internal view returns (bool) {
+    function _unclaimedUndelegation(address delegator, address delegatee) internal view returns (bool) {
         for (uint256 i = 0; i < undelegations[delegator].length; i++) {
             if (undelegations[delegator][i].delegatee == delegatee) {
                 return true;
             }
         }
         return false;
+    }
+
+    /// @notice whether there is a undedeletion unclaimed
+    function _unclaimedReward(address delegator, address delegatee) internal view returns (bool) {
+        return !IDistribute(DISTRIBUTE_CONTRACT).isRewardClaimed(delegator, delegatee);
     }
 }

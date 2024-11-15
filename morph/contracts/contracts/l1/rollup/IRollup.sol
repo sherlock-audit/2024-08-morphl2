@@ -8,16 +8,14 @@ interface IRollup {
 
     /// @param version                  The version of current batch.
     /// @param parentBatchHeader        The header of parent batch, see the comments of `BatchHeaderV0Codec`.
-    /// @param chunks                   The list of encoded chunks, see the comments of `ChunkCodec`.
-    /// @param skippedL1MessageBitmap   The bitmap indicates whether each L1 message is skipped or not.
+    /// @param blockContexts            The block contexts of current batch.
     /// @param prevStateRoot            The state root of parent batch.
     /// @param postStateRoot            The state root of current batch.
     /// @param withdrawalRoot           The withdraw trie root of current batch.
     struct BatchDataInput {
         uint8 version;
         bytes parentBatchHeader;
-        bytes[] chunks;
-        bytes skippedL1MessageBitmap;
+        bytes blockContexts;
         bytes32 prevStateRoot;
         bytes32 postStateRoot;
         bytes32 withdrawalRoot;
@@ -113,10 +111,15 @@ interface IRollup {
     /// @param newVerifier  The address of new rollup verifier.
     event UpdateVerifier(address indexed oldVerifier, address indexed newVerifier);
 
-    /// @notice Emitted when the value of `maxNumTxInChunk` is updated.
-    /// @param oldMaxNumTxInChunk   The old value of `maxNumTxInChunk`.
-    /// @param newMaxNumTxInChunk   The new value of `maxNumTxInChunk`.
-    event UpdateMaxNumTxInChunk(uint256 oldMaxNumTxInChunk, uint256 newMaxNumTxInChunk);
+    /// @notice Emitted when the proof reward percent is updated.
+    /// @param oldPercent  The old proofRewardPercent.
+    /// @param newPercent  The new proofRewardPercent.
+    event UpdateProofRewardPercent(uint256 oldPercent, uint256 newPercent);
+
+    /// @notice Emit when prove remaining claimed.
+    /// @param receiver  receiver address.
+    /// @param amount    claimed amount.
+    event ProveRemainingClaimed(address receiver, uint256 amount);
 
     /// @notice Emitted when the state of Challenge is updated.
     /// @param batchIndex       The index of the batch.
@@ -129,6 +132,11 @@ interface IRollup {
     /// @param winner       The address of winner.
     /// @param res          The result of challenge.
     event ChallengeRes(uint256 indexed batchIndex, address indexed winner, string indexed res);
+
+    /// @notice Emitted when the challenger claim the challenge reward.
+    /// @param receiver  receiver address
+    /// @param amount    claimed amount
+    event ChallengeRewardClaim(address indexed receiver, uint256 amount);
 
     /*************************
      * Public View Functions *

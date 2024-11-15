@@ -56,7 +56,7 @@ func (e *Executor) VerifySignature(tmPubKey []byte, messageHash []byte, blsSig [
 }
 
 func (e *Executor) sequencerSetUpdates() ([][]byte, error) {
-	seqHash, err := e.sequencer.SequencerSetVerifyHash(nil)
+	seqHash, err := e.sequencerCaller.SequencerSetVerifyHash(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -64,15 +64,15 @@ func (e *Executor) sequencerSetUpdates() ([][]byte, error) {
 		return e.nextValidators, nil
 	}
 
-	sequencerSet0, err := e.sequencer.GetSequencerSet0(nil)
+	sequencerSet0, err := e.sequencerCaller.GetSequencerSet0(nil)
 	if err != nil {
 		return nil, err
 	}
-	sequencerSet1, err := e.sequencer.GetSequencerSet1(nil)
+	sequencerSet1, err := e.sequencerCaller.GetSequencerSet1(nil)
 	if err != nil {
 		return nil, err
 	}
-	sequencerSet2, err := e.sequencer.GetSequencerSet2(nil)
+	sequencerSet2, err := e.sequencerCaller.GetSequencerSet2(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +86,7 @@ func (e *Executor) sequencerSetUpdates() ([][]byte, error) {
 			requestAddrs = append(requestAddrs, addr)
 		}
 	}
-	stakesInfo, err := e.l2Staking.GetStakesInfo(nil, requestAddrs)
+	stakesInfo, err := e.l2StakingCaller.GetStakesInfo(nil, requestAddrs)
 	if err != nil {
 		e.logger.Error("failed to GetStakesInfo", "error", err)
 		return nil, err
@@ -119,36 +119,29 @@ func (e *Executor) sequencerSetUpdates() ([][]byte, error) {
 
 func (e *Executor) batchParamsUpdates(height uint64) (*tmproto.BatchParams, error) {
 	var (
-		batchBlockInterval, batchTimeout, batchMaxChunks *big.Int
-		err                                              error
+		batchBlockInterval, batchTimeout *big.Int
+		err                              error
 	)
 
-	if batchBlockInterval, err = e.govContract.BatchBlockInterval(nil); err != nil {
+	if batchBlockInterval, err = e.govCaller.BatchBlockInterval(nil); err != nil {
 		return nil, err
 	}
-	if batchTimeout, err = e.govContract.BatchTimeout(nil); err != nil {
-		return nil, err
-	}
-	if batchMaxChunks, err = e.govContract.MaxChunks(nil); err != nil {
+	if batchTimeout, err = e.govCaller.BatchTimeout(nil); err != nil {
 		return nil, err
 	}
 
 	changed := e.batchParams.BlocksInterval != batchBlockInterval.Int64() ||
-		int64(e.batchParams.Timeout.Seconds()) != batchTimeout.Int64() ||
-		e.batchParams.MaxChunks != batchMaxChunks.Int64()
+		int64(e.batchParams.Timeout.Seconds()) != batchTimeout.Int64()
 
 	if changed {
 		e.batchParams.BlocksInterval = batchBlockInterval.Int64()
 		e.batchParams.Timeout = time.Duration(batchTimeout.Int64() * int64(time.Second))
-		e.batchParams.MaxChunks = batchMaxChunks.Int64()
 		e.logger.Info("batch params changed", "height", height,
 			"batchBlockInterval", batchBlockInterval.Int64(),
-			"batchTimeout", batchTimeout.Int64(),
-			"batchMaxChunks", batchMaxChunks.Int64())
+			"batchTimeout", batchTimeout.Int64())
 		return &tmproto.BatchParams{
 			BlocksInterval: batchBlockInterval.Int64(),
 			Timeout:        time.Duration(batchTimeout.Int64() * int64(time.Second)),
-			MaxChunks:      batchMaxChunks.Int64(),
 		}, nil
 	}
 	return nil, nil

@@ -12,6 +12,7 @@ import (
 	"github.com/morph-l2/go-ethereum/common"
 	"github.com/morph-l2/go-ethereum/common/hexutil"
 	tmconfig "github.com/tendermint/tendermint/config"
+	tmflags "github.com/tendermint/tendermint/libs/cli/flags"
 	tmlog "github.com/tendermint/tendermint/libs/log"
 	"github.com/urfave/cli"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -21,6 +22,11 @@ import (
 	"morph-l2/node/types"
 )
 
+var (
+	MainnetUpgradeBatchTime uint64 = 2000
+	HoleskyUpgradeBatchTime uint64 = 350000
+)
+
 type Config struct {
 	L2                            *types.L2Config `json:"l2"`
 	L2CrossDomainMessengerAddress common.Address  `json:"cross_domain_messenger_address"`
@@ -28,6 +34,7 @@ type Config struct {
 	GovAddress                    common.Address  `json:"gov_address"`
 	L2StakingAddress              common.Address  `json:"l2staking_address"`
 	MaxL1MessageNumPerBlock       uint64          `json:"max_l1_message_num_per_block"`
+	UpgradeBatchTime              uint64          `json:"upgrade_batch_time"`
 	DevSequencer                  bool            `json:"dev_sequencer"`
 	Logger                        tmlog.Logger    `json:"logger"`
 }
@@ -80,11 +87,12 @@ func (c *Config) SetCliContext(ctx *cli.Context) error {
 	if ctx.GlobalIsSet(flags.LogLevel.Name) {
 		logLevel = ctx.GlobalString(flags.LogLevel.Name)
 	}
-	option, err := tmlog.AllowLevel(logLevel)
+
+	logger, err := tmflags.ParseLogLevel(logLevel, logger, "info")
 	if err != nil {
 		return err
 	}
-	logger = tmlog.NewFilter(logger, option)
+
 	c.Logger = logger
 
 	l2EthAddr := ctx.GlobalString(flags.L2EthAddr.Name)
@@ -147,6 +155,17 @@ func (c *Config) SetCliContext(ctx *cli.Context) error {
 
 	if ctx.GlobalIsSet(flags.DevSequencer.Name) {
 		c.DevSequencer = ctx.GlobalBool(flags.DevSequencer.Name)
+	}
+
+	// setup batch upgrade index
+	switch {
+	case ctx.GlobalIsSet(flags.MainnetFlag.Name):
+		c.UpgradeBatchTime = MainnetUpgradeBatchTime
+	case ctx.GlobalIsSet(flags.HoleskyFlag.Name):
+		c.UpgradeBatchTime = HoleskyUpgradeBatchTime
+	case ctx.GlobalIsSet(flags.UpgradeBatchTime.Name):
+		c.UpgradeBatchTime = ctx.GlobalUint64(flags.UpgradeBatchTime.Name)
+		logger.Info("set UpgradeBatchTime: ", ctx.GlobalUint64(flags.UpgradeBatchTime.Name))
 	}
 
 	return nil

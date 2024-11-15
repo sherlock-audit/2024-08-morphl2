@@ -52,9 +52,9 @@ contract BatchHeaderCodecTest {
         return BatchHeaderCodecV0.getTotalL1MessagePopped(batchPtr);
     }
 
-    function getL1DataHash(bytes calldata _batchHeader) public pure returns (bytes32 _dataHash) {
+    function getDataHash(bytes calldata _batchHeader) public pure returns (bytes32 _dataHash) {
         (uint256 batchPtr, ) = BatchHeaderCodecV0.loadAndValidate(_batchHeader);
-        return BatchHeaderCodecV0.getL1DataHash(batchPtr);
+        return BatchHeaderCodecV0.getDataHash(batchPtr);
     }
 
     function getBlobVersionedHash(bytes calldata _batchHeader) public pure returns (bytes32 _blobVersionedHash) {
@@ -111,7 +111,6 @@ contract BatchHeaderCodecTest {
         BatchHeaderCodecV0.storeWithdrawRootHash(_batchPtr, data.withdrawRootHash);
         BatchHeaderCodecV0.storeSequencerSetVerifyHash(_batchPtr, data.sequencerSetVerifyHash);
         BatchHeaderCodecV0.storeParentBatchHash(_batchPtr, data.parentBatchHash);
-        BatchHeaderCodecV0.storeSkippedBitmap(_batchPtr, data.skipMap);
-        return BatchHeaderCodecV0.computeBatchHash(_batchPtr, BatchHeaderCodecV0.BATCH_HEADER_FIXED_LENGTH);
+        return BatchHeaderCodecV0.computeBatchHash(_batchPtr, BatchHeaderCodecV0.BATCH_HEADER_LENGTH);
     }
 }

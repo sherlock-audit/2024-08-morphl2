@@ -38,9 +38,9 @@ type Executor struct {
 	newSyncerFunc NewSyncerFunc
 	syncer        *sync.Syncer
 
-	govContract *bindings.Gov
-	sequencer   *bindings.Sequencer
-	l2Staking   *bindings.L2Staking
+	govCaller       *bindings.GovCaller
+	sequencerCaller *bindings.SequencerCaller
+	l2StakingCaller *bindings.L2StakingCaller
 
 	currentSeqHash *[32]byte
 	valsByTmKey    map[[tmKeySize]byte]validatorInfo
@@ -51,8 +51,9 @@ type Executor struct {
 	isSequencer    bool
 	devSequencer   bool
 
-	rollupABI     *abi.ABI
-	batchingCache *BatchingCache
+	UpgradeBatchTime uint64
+	rollupABI        *abi.ABI
+	batchingCache    *BatchingCache
 
 	logger  tmlog.Logger
 	metrics *Metrics
@@ -85,15 +86,15 @@ func NewExecutor(newSyncFunc NewSyncerFunc, config *Config, tmPubKey crypto.PubK
 	}
 	logger.Info("obtained next L1Message index when initilize executor", "index", index)
 
-	sequencer, err := bindings.NewSequencer(config.SequencerAddress, eClient)
+	sequencer, err := bindings.NewSequencerCaller(config.SequencerAddress, l2Client)
 	if err != nil {
 		return nil, err
 	}
-	gov, err := bindings.NewGov(config.GovAddress, eClient)
+	gov, err := bindings.NewGovCaller(config.GovAddress, l2Client)
 	if err != nil {
 		return nil, err
 	}
-	l2Staking, err := bindings.NewL2Staking(config.L2StakingAddress, eClient)
+	l2Staking, err := bindings.NewL2StakingCaller(config.L2StakingAddress, l2Client)
 	if err != nil {
 		return nil, err
 	}
@@ -109,9 +110,9 @@ func NewExecutor(newSyncFunc NewSyncerFunc, config *Config, tmPubKey crypto.PubK
 	executor := &Executor{
 		l2Client:            l2Client,
 		bc:                  &Version1Converter{},
-		govContract:         gov,
-		sequencer:           sequencer,
-		l2Staking:           l2Staking,
+		govCaller:           gov,
+		sequencerCaller:     sequencer,
+		l2StakingCaller:     l2Staking,
 		tmPubKey:            tmPubKeyBytes,
 		nextL1MsgIndex:      index,
 		maxL1MsgNumPerBlock: config.MaxL1MessageNumPerBlock,
@@ -119,6 +120,7 @@ func NewExecutor(newSyncFunc NewSyncerFunc, config *Config, tmPubKey crypto.PubK
 		devSequencer:        config.DevSequencer,
 		rollupABI:           rollupAbi,
 		batchingCache:       NewBatchingCache(),
+		UpgradeBatchTime:    config.UpgradeBatchTime,
 		logger:              logger,
 		metrics:             PrometheusMetrics("morphnode"),
 	}
@@ -192,18 +194,15 @@ func (e *Executor) RequestBlockData(height int64) (txs [][]byte, blockMeta []byt
 		ReceiptRoot:         l2Block.ReceiptRoot,
 		LogsBloom:           l2Block.LogsBloom,
 		WithdrawTrieRoot:    l2Block.WithdrawTrieRoot,
-		RowConsumption:      l2Block.RowUsages,
 		NextL1MessageIndex:  l2Block.NextL1MessageIndex,
 		Hash:                l2Block.Hash,
 		CollectedL1TxHashes: collectedL1TxHashes,
-		SkippedL1Txs:        l2Block.SkippedTxs,
 	}
 	blockMeta, err = wb.MarshalBinary()
 	txs = l2Block.Transactions
 	e.logger.Info("RequestBlockData response",
 		"txs.length", len(txs),
-		"collectedL1Msgs", collectedL1Msgs,
-		"row consumption", fmt.Sprintf("%v", l2Block.RowUsages))
+		"collectedL1Msgs", collectedL1Msgs)
 	return
 }
 
@@ -239,10 +238,8 @@ func (e *Executor) CheckBlockData(txs [][]byte, metaData []byte) (valid bool, er
 		ReceiptRoot:        wrappedBlock.ReceiptRoot,
 		LogsBloom:          wrappedBlock.LogsBloom,
 		WithdrawTrieRoot:   wrappedBlock.WithdrawTrieRoot,
-		RowUsages:          wrappedBlock.RowConsumption,
 		NextL1MessageIndex: wrappedBlock.NextL1MessageIndex,
 		Hash:               wrappedBlock.Hash,
-		SkippedTxs:         wrappedBlock.SkippedL1Txs,
 
 		Transactions: txs,
 	}
@@ -308,9 +305,7 @@ func (e *Executor) DeliverBlock(txs [][]byte, metaData []byte, consensusData l2n
 		ReceiptRoot:        wrappedBlock.ReceiptRoot,
 		LogsBloom:          wrappedBlock.LogsBloom,
 		WithdrawTrieRoot:   wrappedBlock.WithdrawTrieRoot,
-		RowUsages:          wrappedBlock.RowConsumption,
 		NextL1MessageIndex: wrappedBlock.NextL1MessageIndex,
-		SkippedTxs:         wrappedBlock.SkippedL1Txs,
 		Hash:               wrappedBlock.Hash,
 
 		Transactions: txs,
@@ -378,28 +373,20 @@ func (e *Executor) getParamsAndValsAtHeight(height int64) (*tmproto.BatchParams,
 	callOpts := &bind.CallOpts{
 		BlockNumber: big.NewInt(height),
 	}
-	batchBlockInterval, err := e.govContract.BatchBlockInterval(callOpts)
+	batchBlockInterval, err := e.govCaller.BatchBlockInterval(callOpts)
 	if err != nil {
 		return nil, nil, err
 	}
-	batchMaxBytes, err := e.govContract.BatchMaxBytes(callOpts)
-	if err != nil {
-		return nil, nil, err
-	}
-	batchTimeout, err := e.govContract.BatchTimeout(callOpts)
-	if err != nil {
-		return nil, nil, err
-	}
-	batchMaxChunks, err := e.govContract.MaxChunks(callOpts)
+	batchTimeout, err := e.govCaller.BatchTimeout(callOpts)
 	if err != nil {
 		return nil, nil, err
 	}
 	// fetch current sequencerSet info at certain height
-	addrs, err := e.sequencer.GetSequencerSet2(callOpts)
+	addrs, err := e.sequencerCaller.GetSequencerSet2(callOpts)
 	if err != nil {
 		return nil, nil, err
 	}
-	stakesInfo, err := e.l2Staking.GetStakesInfo(callOpts, addrs)
+	stakesInfo, err := e.l2StakingCaller.GetStakesInfo(callOpts, addrs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -410,9 +397,7 @@ func (e *Executor) getParamsAndValsAtHeight(height int64) (*tmproto.BatchParams,
 
 	return &tmproto.BatchParams{
 		BlocksInterval: batchBlockInterval.Int64(),
-		MaxBytes:       batchMaxBytes.Int64(),
 		Timeout:        time.Duration(batchTimeout.Int64() * int64(time.Second)),
-		MaxChunks:      batchMaxChunks.Int64(),
 	}, newValidators, nil
 }
 

@@ -111,10 +111,6 @@ interface IL2Staking {
     /// @param staker   staker address
     function isStakingTo(address staker) external view returns (bool);
 
-    /// @notice Get all the delegators which staked to staker
-    /// @param staker staker address
-    function getAllDelegators(address staker) external view returns (address[] memory);
-
     /// @notice Get the delegators length which staked to staker
     /// @param staker staker address
     function getDelegatorsLength(address staker) external view returns (uint256);
@@ -144,12 +140,14 @@ interface IL2Staking {
      *****************************/
 
     /// @notice add staker, sync from L1
-    /// @param add       staker to add. {addr, tmKey, blsKey}
-    function addStaker(Types.StakerInfo calldata add) external;
+    /// @param nonce    msg nonce
+    /// @param add      staker to add. {addr, tmKey, blsKey}
+    function addStaker(uint256 nonce, Types.StakerInfo calldata add) external;
 
     /// @notice remove stakers, sync from L1
-    /// @param remove    staker to remove
-    function removeStakers(address[] calldata remove) external;
+    /// @param nonce    msg nonce
+    /// @param remove   staker to remove
+    function removeStakers(uint256 nonce, address[] calldata remove) external;
 
     /// @notice setCommissionRate set delegate commission percentage
     /// @param commission    commission percentage, denominator is 100
@@ -172,7 +170,6 @@ interface IL2Staking {
     /// @param targetEpochIndex  up to the epoch index that the delegator wants to claim
     function claimReward(address delegatee, uint256 targetEpochIndex) external;
 
-    /// @notice claimCommission claim commission reward
-    /// @param targetEpochIndex   up to the epoch index that the staker wants to claim
-    function claimCommission(uint256 targetEpochIndex) external;
+    /// @notice claimCommission claim unclaimed commission reward of a staker
+    function claimCommission() external;
 }
